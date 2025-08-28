@@ -82,7 +82,7 @@ app.get('/api/invoices/:id', async (req, res) => {
 // POST new invoice
 app.post('/api/invoices', async (req, res) => {
     try {
-        const { namaKlien, tanggalInvoice, items } = req.body;
+        const { namaKlien, noTelepon, tanggalInvoice, items } = req.body;
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -104,6 +104,7 @@ app.post('/api/invoices', async (req, res) => {
             _id: new ObjectId(),
             nomorInvoice,
             namaKlien,
+            noTelepon,
             tanggalInvoice: new Date(tanggalInvoice),
             items,
             createdAt: new Date(),
@@ -115,5 +116,24 @@ app.post('/api/invoices', async (req, res) => {
         res.status(500).json({ message: "Failed to create invoice", error: e.message });
     }
 });
+
+// DELETE an invoice
+app.delete('/api/invoices/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid ID" });
+        
+        const result = await invoicesCollection.deleteOne({ _id: new ObjectId(id) });
+        
+        if (result.deletedCount === 0) {
+            return res.status(404).json({ message: "Invoice not found" });
+        }
+        
+        res.json({ message: "Invoice deleted successfully" });
+    } catch (e) {
+        res.status(500).json({ message: "Failed to delete invoice", error: e.message });
+    }
+});
+
 
 startServer();
