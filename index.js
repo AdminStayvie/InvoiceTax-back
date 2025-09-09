@@ -146,6 +146,7 @@ app.post('/api/invoices/:type', async (req, res) => {
             tanggalInvoice: new Date(tanggalInvoice),
             items,
             type, // Save the type within the document
+            status: 'belum lunas', // Default status for new invoice
             createdAt: new Date(),
         };
 
@@ -155,6 +156,39 @@ app.post('/api/invoices/:type', async (req, res) => {
         res.status(500).json({ message: "Failed to create invoice", error: e.message });
     }
 });
+
+// PATCH invoice status by type
+app.patch('/api/invoices/:type/:id/status', async (req, res) => {
+    try {
+        const { type, id } = req.params;
+        const { status } = req.body;
+        const collection = getCollection(type);
+
+        if (!collection) {
+            return res.status(400).json({ message: "Invalid invoice type" });
+        }
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ message: "Invalid ID" });
+        }
+        if (status !== 'lunas' && status !== 'belum lunas') {
+            return res.status(400).json({ message: "Invalid status value" });
+        }
+
+        const result = await collection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: status } }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ message: "Invoice not found" });
+        }
+
+        res.json({ message: "Invoice status updated successfully" });
+    } catch (e) {
+        res.status(500).json({ message: "Failed to update invoice status", error: e.message });
+    }
+});
+
 
 // DELETE an invoice by type
 app.delete('/api/invoices/:type/:id', async (req, res) => {
