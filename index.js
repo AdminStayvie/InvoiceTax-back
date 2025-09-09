@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const { MongoClient, ObjectId } = require('mongodb');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const port = process.env.PORT || 3002;
@@ -20,14 +21,36 @@ if (!mongoUri) {
 }
 
 const client = new MongoClient(mongoUri);
-let db, invoicesCollection;
+let db, hotelInvoicesCollection, taxplusInvoicesCollection;
+
+// Helper function to get the correct collection based on type
+function getCollection(type) {
+    return type === 'hotel' ? hotelInvoicesCollection : taxplusInvoicesCollection;
+}
+
+// Function to ensure placeholder logo for Stay.vie exists
+function ensureStayvieLogo() {
+    const publicDir = path.join(__dirname, 'public');
+    const taxplusLogoPath = path.join(publicDir, 'Logo.png');
+    const stayvieLogoPath = path.join(publicDir, 'Logo_stayvie.png');
+
+    if (fs.existsSync(taxplusLogoPath) && !fs.existsSync(stayvieLogoPath)) {
+        fs.copyFileSync(taxplusLogoPath, stayvieLogoPath);
+        console.log('✅ Created placeholder Logo_stayvie.png');
+    }
+}
+
 
 async function startServer() {
     try {
         await client.connect();
         db = client.db(dbName);
-        invoicesCollection = db.collection('invoices');
+        hotelInvoicesCollection = db.collection('hotel_invoices');
+        taxplusInvoicesCollection = db.collection('taxplus_invoices');
         console.log(`✅ Successfully connected to MongoDB, database: ${dbName}`);
+        
+        ensureStayvieLogo();
+
         app.listen(port, () => {
             console.log(`🚀 Server is running on http://localhost:${port}`);
         });
@@ -39,20 +62,24 @@ async function startServer() {
 
 // === INVOICES API ===
 
-// GET all invoices with search and pagination
-app.get('/api/invoices', async (req, res) => {
+// GET all invoices by type with search and pagination
+app.get('/api/invoices/:type', async (req, res) => {
     try {
+        const { type } = req.params;
+        const collection = getCollection(type);
+        if (!collection) return res.status(400).json({ message: "Invalid invoice type" });
+
         const { search = '', page = 1, limit = 10 } = req.query;
         const matchStage = search ? { namaKlien: { $regex: search, $options: 'i' } } : {};
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
-        const invoices = await invoicesCollection.find(matchStage)
+        const invoices = await collection.find(matchStage)
             .sort({ tanggalInvoice: -1 })
             .skip(skip)
             .limit(parseInt(limit))
             .toArray();
             
-        const total = await invoicesCollection.countDocuments(matchStage);
+        const total = await collection.countDocuments(matchStage);
 
         res.json({
             data: invoices,
@@ -66,12 +93,15 @@ app.get('/api/invoices', async (req, res) => {
     }
 });
 
-// GET single invoice
-app.get('/api/invoices/:id', async (req, res) => {
+// GET single invoice by type
+app.get('/api/invoices/:type/:id', async (req, res) => {
     try {
-        const { id } = req.params;
+        const { type, id } = req.params;
+        const collection = getCollection(type);
+        if (!collection) return res.status(400).json({ message: "Invalid invoice type" });
+
         if (!ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid ID" });
-        const invoice = await invoicesCollection.findOne({ _id: new ObjectId(id) });
+        const invoice = await collection.findOne({ _id: new ObjectId(id) });
         if (!invoice) return res.status(404).json({ message: "Invoice not found" });
         res.json(invoice);
     } catch (e) {
@@ -79,26 +109,34 @@ app.get('/api/invoices/:id', async (req, res) => {
     }
 });
 
-// POST new invoice
-app.post('/api/invoices', async (req, res) => {
+// POST new invoice by type
+app.post('/api/invoices/:type', async (req, res) => {
     try {
+        const { type } = req.params;
+        const collection = getCollection(type);
+        if (!collection) return res.status(400).json({ message: "Invalid invoice type" });
+
         const { namaKlien, noTelepon, tanggalInvoice, items } = req.body;
+        
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
 
-        const lastInvoice = await invoicesCollection.findOne(
-            { nomorInvoice: { $regex: `^INV/TP/${year}/${month}/` } },
+        const prefix = type === 'hotel' ? `INV/SV` : `INV/TP`;
+        
+        const lastInvoice = await collection.findOne(
+            { nomorInvoice: { $regex: `^${prefix}/${year}/${month}/` } },
             { sort: { nomorInvoice: -1 } }
         );
 
         let nextIdNumber = 1;
-        if (lastInvoice) {
-            nextIdNumber = parseInt(lastInvoice.nomorInvoice.split('/').pop()) + 1;
+        if (lastInvoice && lastInvoice.nomorInvoice) {
+            const lastId = lastInvoice.nomorInvoice.split('/').pop();
+            nextIdNumber = parseInt(lastId) + 1;
         }
         
         const nextId = String(nextIdNumber).padStart(4, '0');
-        const nomorInvoice = `INV/TP/${year}/${month}/${nextId}`;
+        const nomorInvoice = `${prefix}/${year}/${month}/${nextId}`;
 
         const newInvoice = {
             _id: new ObjectId(),
@@ -107,23 +145,27 @@ app.post('/api/invoices', async (req, res) => {
             noTelepon,
             tanggalInvoice: new Date(tanggalInvoice),
             items,
+            type, // Save the type within the document
             createdAt: new Date(),
         };
 
-        const result = await invoicesCollection.insertOne(newInvoice);
-        res.status(201).json({ message: "Invoice created successfully", data: result });
+        const result = await collection.insertOne(newInvoice);
+        res.status(201).json({ message: "Invoice created successfully", data: result.insertedId });
     } catch (e) {
         res.status(500).json({ message: "Failed to create invoice", error: e.message });
     }
 });
 
-// DELETE an invoice
-app.delete('/api/invoices/:id', async (req, res) => {
+// DELETE an invoice by type
+app.delete('/api/invoices/:type/:id', async (req, res) => {
     try {
-        const { id } = req.params;
+        const { type, id } = req.params;
+        const collection = getCollection(type);
+        if (!collection) return res.status(400).json({ message: "Invalid invoice type" });
+
         if (!ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid ID" });
         
-        const result = await invoicesCollection.deleteOne({ _id: new ObjectId(id) });
+        const result = await collection.deleteOne({ _id: new ObjectId(id) });
         
         if (result.deletedCount === 0) {
             return res.status(404).json({ message: "Invoice not found" });
@@ -134,6 +176,5 @@ app.delete('/api/invoices/:id', async (req, res) => {
         res.status(500).json({ message: "Failed to delete invoice", error: e.message });
     }
 });
-
 
 startServer();
