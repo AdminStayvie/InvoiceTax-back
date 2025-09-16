@@ -116,7 +116,7 @@ app.post('/api/invoices/:type', async (req, res) => {
         const collection = getCollection(type);
         if (!collection) return res.status(400).json({ message: "Invalid invoice type" });
 
-        const { namaKlien, noTelepon, tanggalInvoice, items } = req.body;
+        const { namaKlien, noTelepon, tanggalInvoice, items, downPayment = 0 } = req.body;
         
         const now = new Date();
         const year = now.getFullYear();
@@ -138,6 +138,24 @@ app.post('/api/invoices/:type', async (req, res) => {
         const nextId = String(nextIdNumber).padStart(4, '0');
         const nomorInvoice = `${prefix}/${year}/${month}/${nextId}`;
 
+        const totalAmount = items.reduce((sum, item) => sum + (item.total || 0), 0);
+        let status = 'belum lunas';
+        const payments = [];
+
+        if (downPayment > 0) {
+            payments.push({
+                amount: parseFloat(downPayment),
+                date: new Date(tanggalInvoice),
+                notes: 'Uang Muka (DP)'
+            });
+            if (downPayment >= totalAmount) {
+                status = 'lunas';
+            } else {
+                status = 'dp lunas';
+            }
+        }
+
+
         const newInvoice = {
             _id: new ObjectId(),
             nomorInvoice,
@@ -145,8 +163,9 @@ app.post('/api/invoices/:type', async (req, res) => {
             noTelepon,
             tanggalInvoice: new Date(tanggalInvoice),
             items,
-            type, // Save the type within the document
-            status: 'belum lunas', // Default status for new invoice
+            payments,
+            type,
+            status: status,
             createdAt: new Date(),
         };
 
@@ -157,12 +176,65 @@ app.post('/api/invoices/:type', async (req, res) => {
     }
 });
 
+// POST a new payment to an invoice
+app.post('/api/invoices/:type/:id/payment', async (req, res) => {
+    try {
+        const { type, id } = req.params;
+        const { amount, date, notes } = req.body;
+        const collection = getCollection(type);
+
+        if (!collection) return res.status(400).json({ message: "Invalid invoice type" });
+        if (!ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid ID" });
+        if (!amount || amount <= 0) return res.status(400).json({ message: "Invalid payment amount" });
+
+        const invoice = await collection.findOne({ _id: new ObjectId(id) });
+        if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+        const newPayment = {
+            amount: parseFloat(amount),
+            date: date ? new Date(date) : new Date(),
+            notes: notes || 'Pembayaran'
+        };
+
+        const updateResult = await collection.updateOne(
+            { _id: new ObjectId(id) },
+            { $push: { payments: newPayment } }
+        );
+        
+        if(updateResult.modifiedCount === 0) {
+             return res.status(500).json({ message: "Failed to add payment" });
+        }
+        
+        const updatedInvoice = await collection.findOne({ _id: new ObjectId(id) });
+        const totalAmount = updatedInvoice.items.reduce((sum, item) => sum + (item.total || 0), 0);
+        const totalPaid = updatedInvoice.payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+        
+        let newStatus = 'belum lunas';
+        if (totalPaid >= totalAmount) {
+            newStatus = 'lunas';
+        } else if (totalPaid > 0) {
+            newStatus = 'dp lunas';
+        }
+        
+        await collection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: newStatus } }
+        );
+
+        res.status(200).json({ message: "Payment added successfully", status: newStatus });
+
+    } catch (e) {
+        res.status(500).json({ message: "Failed to add payment", error: e.message });
+    }
+});
+
 // PATCH invoice status by type
 app.patch('/api/invoices/:type/:id/status', async (req, res) => {
     try {
         const { type, id } = req.params;
         const { status } = req.body;
         const collection = getCollection(type);
+        const validStatuses = ['lunas', 'belum lunas', 'dp lunas'];
 
         if (!collection) {
             return res.status(400).json({ message: "Invalid invoice type" });
@@ -170,7 +242,7 @@ app.patch('/api/invoices/:type/:id/status', async (req, res) => {
         if (!ObjectId.isValid(id)) {
             return res.status(400).json({ message: "Invalid ID" });
         }
-        if (status !== 'lunas' && status !== 'belum lunas') {
+        if (!validStatuses.includes(status)) {
             return res.status(400).json({ message: "Invalid status value" });
         }
 
@@ -212,3 +284,4 @@ app.delete('/api/invoices/:type/:id', async (req, res) => {
 });
 
 startServer();
+
