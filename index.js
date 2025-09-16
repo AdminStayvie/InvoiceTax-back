@@ -103,6 +103,25 @@ app.get('/api/invoices/:type/:id', async (req, res) => {
         if (!ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid ID" });
         const invoice = await collection.findOne({ _id: new ObjectId(id) });
         if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+        // Lazy migration for payment IDs
+        let needsUpdate = false;
+        if (invoice.payments && Array.isArray(invoice.payments)) {
+            invoice.payments.forEach(p => {
+                if (!p._id) {
+                    p._id = new ObjectId();
+                    needsUpdate = true;
+                }
+            });
+        }
+
+        if (needsUpdate) {
+            await collection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { payments: invoice.payments } }
+            );
+        }
+        
         res.json(invoice);
     } catch (e) {
         res.status(500).json({ message: "Failed to get invoice details", error: e.message });
