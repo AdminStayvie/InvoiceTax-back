@@ -144,6 +144,7 @@ app.post('/api/invoices/:type', async (req, res) => {
 
         if (downPayment > 0) {
             payments.push({
+                _id: new ObjectId(),
                 amount: parseFloat(downPayment),
                 date: new Date(tanggalInvoice),
                 notes: 'Uang Muka (DP)'
@@ -191,6 +192,7 @@ app.post('/api/invoices/:type/:id/payment', async (req, res) => {
         if (!invoice) return res.status(404).json({ message: "Invoice not found" });
 
         const newPayment = {
+            _id: new ObjectId(),
             amount: parseFloat(amount),
             date: date ? new Date(date) : new Date(),
             notes: notes || 'Pembayaran'
@@ -227,6 +229,48 @@ app.post('/api/invoices/:type/:id/payment', async (req, res) => {
         res.status(500).json({ message: "Failed to add payment", error: e.message });
     }
 });
+
+// DELETE a payment from an invoice
+app.delete('/api/invoices/:type/:id/payment/:paymentId', async (req, res) => {
+    try {
+        const { type, id, paymentId } = req.params;
+        const collection = getCollection(type);
+
+        if (!collection) return res.status(400).json({ message: "Invalid invoice type" });
+        if (!ObjectId.isValid(id) || !ObjectId.isValid(paymentId)) return res.status(400).json({ message: "Invalid ID" });
+
+        const updateResult = await collection.updateOne(
+            { _id: new ObjectId(id) },
+            { $pull: { payments: { _id: new ObjectId(paymentId) } } }
+        );
+
+        if (updateResult.modifiedCount === 0) {
+            return res.status(404).json({ message: "Payment not found or could not be deleted" });
+        }
+        
+        const updatedInvoice = await collection.findOne({ _id: new ObjectId(id) });
+        const totalAmount = updatedInvoice.items.reduce((sum, item) => sum + (item.total || 0), 0);
+        const totalPaid = (updatedInvoice.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+        
+        let newStatus = 'belum lunas';
+        if (totalPaid >= totalAmount) {
+            newStatus = 'lunas';
+        } else if (totalPaid > 0) {
+            newStatus = 'dp lunas';
+        }
+        
+        await collection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: newStatus } }
+        );
+
+        res.status(200).json({ message: "Payment deleted successfully", status: newStatus });
+
+    } catch (e) {
+        res.status(500).json({ message: "Failed to delete payment", error: e.message });
+    }
+});
+
 
 // PATCH invoice status by type
 app.patch('/api/invoices/:type/:id/status', async (req, res) => {
